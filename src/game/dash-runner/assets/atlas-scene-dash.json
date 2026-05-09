@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "image": "atlas-scene-dash.png",
+    "format": "RGBA8888",
+    "size": { "w": 256, "h": 256 },
+    "scale": "1",
+    "app": "dash-runner-atlas"
+  },
+  "frames": {
+    "character-runner.png": {
+      "frame": { "x": 0, "y": 0, "w": 32, "h": 48 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 48 },
+      "sourceSize": { "w": 32, "h": 48 }
+    },
+    "piece-platform.png": {
+      "frame": { "x": 32, "y": 0, "w": 64, "h": 24 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 64, "h": 24 },
+      "sourceSize": { "w": 64, "h": 24 }
+    },
+    "piece-barrier.png": {
+      "frame": { "x": 96, "y": 0, "w": 32, "h": 32 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 },
+      "sourceSize": { "w": 32, "h": 32 }
+    },
+    "ui-finish-line.png": {
+      "frame": { "x": 128, "y": 0, "w": 8, "h": 96 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 8, "h": 96 },
+      "sourceSize": { "w": 8, "h": 96 }
+    },
+    "bg-neon-grid.png": {
+      "frame": { "x": 136, "y": 0, "w": 40, "h": 40 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 40, "h": 40 },
+      "sourceSize": { "w": 40, "h": 40 }
+    }
+  }
+}

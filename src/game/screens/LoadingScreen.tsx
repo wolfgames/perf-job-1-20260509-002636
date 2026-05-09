@@ -94,29 +94,30 @@ export function LoadingScreen() {
   });
 
   return (
-    <div class="fixed inset-0 flex flex-col items-center justify-center bg-[#BCE083]">
+    <div class="fixed inset-0 flex flex-col items-center justify-center" style={{ background: '#0a0a1a' }}>
       <Show
         when={failedBundles().length === 0}
         fallback={
           <div class="text-center max-w-sm px-6">
-            <p class="text-lg font-semibold text-gray-800 mb-2">Unable to load</p>
-            <p class="text-sm text-gray-600 mb-4">
+            <p class="text-lg font-semibold mb-2" style={{ color: '#00FFAA' }}>Unable to load</p>
+            <p class="text-sm mb-4" style={{ color: 'rgba(255,255,255,0.6)' }}>
               Failed to load: {failedBundles().join(', ')}
             </p>
             <button
               onClick={retryFailed}
-              class="px-6 py-3 bg-white text-gray-800 rounded-xl font-medium shadow-md hover:shadow-lg active:scale-95 transition-all"
+              class="px-6 py-3 rounded-xl font-medium active:scale-95 transition-all"
+              style={{ background: 'transparent', color: '#00FFAA', border: '2px solid #00FFAA', 'min-height': '44px' }}
             >
               Retry
             </button>
           </div>
         }
       >
-        <Spinner size="lg" class="w-24 h-24 text-gray-800" />
-        <div class="mt-8 w-64 h-2 bg-white/30 rounded-full overflow-hidden">
+        <Spinner size="lg" class="w-24 h-24" style={{ color: '#00FFAA' }} />
+        <div class="mt-8 w-64 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(0,255,170,0.15)' }}>
           <div
-            class="h-full bg-gray-800 rounded-full transition-all duration-300"
-            style={{ width: `${progress()}%` }}
+            class="h-full rounded-full transition-all duration-300"
+            style={{ width: `${progress()}%`, background: '#00FFAA' }}
           />
         </div>
       </Show>

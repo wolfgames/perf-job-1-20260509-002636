@@ -10,8 +10,8 @@ import type { GameTuning } from '~/game/tuning';
 import { useGameData } from '~/game/screens/useGameData';
 import { gameState } from '~/game/state';
 
-// Game-specific controller — swap this import for a different game
-import { setupGame } from '~/game/mygame/screens/gameController';
+// Dash Runner controller
+import { setupGame } from '~/game/dash-runner/screens/gameController';
 
 export default function GameScreen() {
   const { coordinator } = useAssets();

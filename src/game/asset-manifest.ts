@@ -46,19 +46,17 @@ export const manifest: Manifest = {
       assets: [{ alias: 'atlas-branding-wolf', src: 'atlas-branding-wolf.json' }],
     },
 
-    // When adding bundles for your game, use the appropriate prefix:
-    //
-    //   scene-*  → GPU spritesheets, backgrounds, tiles
-    //   core-*   → GPU in-game UI atlases
-    //   fx-*     → GPU particles, effects, VFX
-    //   audio-*  → Howler sound effects and music
-    //   data-*   → JSON config files
-    //   boot-*   → DOM pre-engine splash assets
-    //
-    // Examples:
-    //   { name: 'scene-tiles-mygame', assets: [{ alias: 'scene-tiles-mygame', src: 'atlas-tiles-mygame.json' }] },
-    //   { name: 'fx-blast', assets: [{ alias: 'fx-blast', src: 'vfx-blast.json' }] },
-    //   { name: 'audio-sfx-mygame', assets: [{ alias: 'audio-sfx-mygame', src: 'sfx-mygame.json' }] },
-    //   { name: 'audio-music-mygame', assets: [{ alias: 'audio-music-mygame', src: 'music-mygame.json' }] },
+    // Dash Runner — GPU scene bundle (scene-* prefix required for Pixi; guardrail #5)
+    // Single atlas = single draw call (guardrail #7).
+    {
+      name: 'scene-dash',
+      assets: [
+        { alias: 'bg-neon-grid',       src: 'dash-runner/atlas-scene-dash.json' },
+        { alias: 'piece-platform',     src: 'dash-runner/atlas-scene-dash.json' },
+        { alias: 'piece-barrier',      src: 'dash-runner/atlas-scene-dash.json' },
+        { alias: 'ui-finish-line',     src: 'dash-runner/atlas-scene-dash.json' },
+        { alias: 'character-runner',   src: 'dash-runner/atlas-scene-dash.json' },
+      ],
+    },
   ],
 };
