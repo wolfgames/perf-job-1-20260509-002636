@@ -1,0 +1,784 @@
+# implementation-plan.yml — Structured batch execution plan
+# Written by phase 30 (plan). Read by implement, integrate, player-flow, stabilize.
+
+game: "Dash Runner"
+gdd_type: "additive"
+# Rationale: Only 2 of 19 features are conflict/adapt (not replace). Core mechanic
+# changes from DOM to Pixi, but the contract shape (setupGame → GameController) is
+# preserved. Batch 1 is a foundation replacement; batches 2+ are additive vertical
+# slices on the new Pixi foundation.
+total_batches: 6
+total_features: 19
+new_files: 18
+modified_files: 7
+
+viewport_budget:
+  # Derived from: prime.carry_forward (reserved values), GDD spec (30% platform zone),
+  # pixi viewport profile. Measurement basis: greenfield_defaults.
+  default:
+    viewport_height: 844
+    viewport_width: 390
+    dom_reserved_top: 0         # src/game/screens/GameScreen.tsx — no top DOM overlay
+    dom_reserved_bottom: 64     # WolfGames Logo: 24px + bottom-8 (32px) margin = 64px (GameScreen.tsx:css=bottom-8)
+    hud_top: 48                 # GPU HUD: level text (24px) + progress bar (24px) — Pixi Text + Graphics
+    game_canvas_available: 780  # 844 - 64 = 780 px (GPU canvas fills full viewport; DOM overlay on top)
+    play_area_usable: 732       # 780 - 48 (HUD) = 732 px play area below HUD
+    platform_zone: 253          # 30% of 844 = 253 px — platforms occupy bottom ~30% of viewport
+    runner_x: 97                # 25% of 390 = 97.5 px — runner pinned position from left
+    runner_size: "32×48 px"     # scene-runner atlas sprite
+    platform_tile: "64×24 px"  # scene-platform — satisfies pipeline tile size constraints
+    barrier_size: "32×32 px"    # scene-barrier — visually distinct from platform
+    finish_line: "8×96 px"     # scene-finish — bright accent stripe
+    hud_overlap_check: "PASS"   # HUD top 48px does not overlap WolfGames Logo (bottom 64px reserved)
+  notes: >
+    runner (32×48) is the primary character piece — satisfies canvas CoS minimum
+    recognizable-art floor. Platform tiles are environment (64×24), barriers (32×32)
+    are distinct. All fit within available height without overlap.
+
+resolved_questions:
+  - question: "What slug replaces 'mygame'? GDD title is 'Dash Runner'."
+    decision: "game_slug = dash-runner"
+    rationale: >
+      Kebab-case form of the GDD title. Directory-safe, no spaces, lowercase.
+      All <game-root> tokens in gdd-analysis.yml resolve to src/game/dash-runner/.
+
+  - question: >
+      Does Dash Runner need a points-based score with multiplicative dimensions,
+      or is 'levels cleared' the sole metric?
+    decision: >
+      Add a time-efficiency score: levelScore = levelsCleared * 1000 *
+      speedMultiplier * retryPenaltyFactor. speedMultiplier = runnerSpeed / 180
+      (normalized; range 1.0–1.67). retryPenaltyFactor = 1.0 / (1 + retryCount * 0.25).
+      Displayed as cumulative score on results screen in addition to levelsCleared.
+    rationale: >
+      scoring CoS (core pass) requires ≥2 multiplicative dimensions. levels-cleared
+      alone is a single additive metric. The formula above provides: base (levelsCleared),
+      magnitude (speedMultiplier — faster runner = harder = more points), and
+      efficiency (retryPenaltyFactor — fewer retries = higher score). Satisfies CoS
+      exit criteria: skilled player scores 3× more than a struggling player on same level.
+      skill-wins on q-scoring-formula per allow-gdd-overrides=false.
+
+  - question: >
+      Should an airborne tap produce any rejection feedback (visual/audio)?
+    decision: >
+      Add a subtle runner wiggle on airborne tap: brief GSAP x-oscillation ±4px
+      over 150ms, ease: none, 3 cycles. No audio cue in core pass. No double-jump.
+      The wiggle communicates "tap received but blocked" without implying an error.
+    rationale: >
+      core-interaction CoS requires invalid gestures produce visible feedback.
+      skill-wins (allow-gdd-overrides=false). GDD's "silent ignore" is dropped.
+      Wiggle preserves no-double-jump while satisfying CoS. Added to tap-input-handler
+      and RunnerRenderer (new wiggle method).
+
+preserve_list: []
+# This is an additive GDD — existing infrastructure to preserve:
+# (listed informally, not as preserve_list — no transformative replacement)
+# - setupGame/GameController contract shape (mygame-contract.ts) → reuse
+# - SolidJS screen flow routing (loading/start/game/results) → no changes
+# - Asset coordinator infrastructure → extend with scene-* bundles
+# - src/game/state.ts signal shape → becomes bridge targets for ECS
+
+batches:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 1 — P0 Foundation: ECS State + Pixi App Init + Game Controller
+  # "Player can see the Dash Runner game canvas launch after tapping Play"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 1
+    name: "Foundation — ECS Plugin + Pixi App Init + GameController shell"
+    priority: P0
+    player_visible: >
+      Player taps Play on the Start screen; the game canvas launches with a black
+      background and a dark neon grid (or solid dark fill as emoji/tint fallback).
+      The HUD area at the top shows "Level 1" text. Game phase is idle (awaiting
+      first tap). No crash on init; destroy cleans up correctly.
+    features: [game-state-ecs-adapted, pixi-app-init, game-controller-stub-replaced]
+    # Note: game-state-ecs-adapted = game-state-signals (adapt conflict) + DashPlugin
+    # pixi-app-init = new feature pixi-app-init
+    # game-controller-stub-replaced = game-controller-stub (adapt conflict, internals replaced)
+    cos_covered: [core-interaction, animated-dynamics, canvas]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas]
+    acceptance:
+      # game-state-ecs-adapted
+      - given: "DashPlugin is created with Database.create(DashPlugin)"
+        should: "resources currentLevel=1, gamePhase='idle', runnerSpeed=180, retryCount=0 exist and are readable"
+      - given: "db.transactions.setPhase({phase:'airborne'}) is called"
+        should: "db.resources.gamePhase === 'airborne'"
+      - given: "bridgeEcsToSignals(db) is wired and db.transactions.setLevel({level:3}) fires"
+        should: "gameState.level() === 3 (SolidJS signal updated via bridge)"
+      # pixi-app-init
+      - given: "setupGame(deps).init(container) is called"
+        should: "a Pixi Application mounts on the container, canvas is appended, resolution = Math.min(devicePixelRatio, 2)"
+      - given: "app is initialized"
+        should: "stage has bg-layer (eventMode none), world-layer (eventMode passive), ui-layer (eventMode passive)"
+      # game-controller-stub-replaced
+      - given: "GameController.init(container) completes"
+        should: "gameMode is 'pixi', ECS db is created and setActiveDb(db) is called, bridgeEcsToSignals cleanup is registered"
+      - given: "GameController.destroy() is called"
+        should: "GSAP tweens killed, Pixi app destroyed, ECS bridge unsubscribed, setActiveDb(null) called — no exceptions"
+      # canvas CoS — visual identity
+      - given: "canvas launches"
+        should: "background is 0x000000 (black), world-layer is visible, bg has a dark neon grid pattern (tinted Graphics or emoji fill — not blank white)"
+    test_loci:
+      - describe: "DashPlugin — ECS state shape"
+        file: "tests/dash-runner/state/DashPlugin.test.ts"
+        cases:
+          - "initializes resources with correct defaults"
+          - "setPhase transaction updates gamePhase"
+          - "setLevel transaction updates currentLevel and runnerSpeed"
+          - "bridgeEcsToSignals wires level signal correctly"
+      - describe: "GameController — Pixi init and teardown"
+        file: "tests/dash-runner/GameController.test.ts"
+        cases:
+          - "init mounts Pixi canvas onto container"
+          - "layer stack has correct eventMode per layer"
+          - "destroy kills tweens, destroys app, calls setActiveDb(null)"
+          - "gameMode is pixi after init"
+    files:
+      state:
+        - src/game/dash-runner/state/DashPlugin.ts
+        - src/game/dash-runner/state/types.ts
+        - src/game/state.ts   # adapted: signals become bridge targets only
+      integration:
+        - src/game/dash-runner/GameController.ts
+        - src/game/dash-runner/screens/gameController.ts   # re-export setupGame
+        - src/game/dash-runner/screens/startView.ts        # wires initGpu + audio unlock
+      test:
+        - tests/dash-runner/state/DashPlugin.test.ts
+        - tests/dash-runner/GameController.test.ts
+    how:
+      - >
+        Create src/game/dash-runner/ directory tree with state/, renderers/, level/,
+        physics/, screens/, assets/ subdirectories. Rename mygame→dash-runner in
+        src/game/mygame/index.ts re-export (update game/config.ts game-root reference).
+      - >
+        Define DashPlugin.ts with plugin property order: extends → services → components
+        → resources → archetypes → computed → transactions → actions → systems.
+        Resources: currentLevel (1), gamePhase ('idle'|'airborne'|'animating'|'won'|'lost'),
+        runnerSpeed (180), retryCount (0), levelsCleared (0), score (0).
+        Transactions: setPhase, setLevel, incrementLevel, addScore, incrementRetry, reset.
+      - >
+        Replace gameController.ts internals (DOM mode) with Pixi Application:
+        resizeTo container, resolution = Math.min(devicePixelRatio, 2), background 0x000000.
+        Wire ECS lifecycle: create db → setActiveDb → bridgeEcsToSignals → layer stack.
+        Destroy order: gsap.killTweensOf(stage) → app.destroy(true) → cleanupObserve() → setActiveDb(null).
+    risk: HIGH
+    risk_reason: >
+      Central integration point (game-controller-stub HIGH risk). Pixi init + ECS wiring
+      + lifecycle all in one batch. Rollback: revert GameController.ts to DOM mode stub
+      if Pixi init fails (contract shape preserved — only internals change).
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at src/game/dash-runner/GameController.ts"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered: canvas (background visible), core-interaction (stage eventMode correct), animated-dynamics (layer stack present)"
+      - "touch targets ≥ 44 px and feedback surfaces present per ux_zones (stage eventMode static)"
+      - "reserved_bottom_px=64 consumed: no interactive content below y=780 (844-64)"
+      - "bun run build + bun test pass within 3 fix cycles"
+      - "setActiveDb(null) called in destroy — Inspector does not hold stale reference"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 2 — P0 Physics + Level Generator + Tap Input (Core Loop)
+  # "Player can tap to jump and die on a gap — the core game is playable"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 2
+    name: "Core Loop — Physics, Level Generator, Tap Input"
+    priority: P0
+    player_visible: >
+      Player sees a runner rectangle (32×48 px, emoji 🟦 fallback) at 25% from left,
+      auto-running right. Platforms and gaps are laid out. Player taps → runner jumps
+      (arc visible in ~16 ms). Runner falls off a gap → loss state. Runner reaches
+      finish line → win state. Both outcomes are logged to ECS (gamePhase changes).
+      Input is blocked while airborne (tap silently ignored, with runner wiggle).
+    features: [physics-loop, level-generator, tap-input-handler]
+    cos_covered: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas]
+    acceptance:
+      # physics-loop
+      - given: "physicsStep(state, dt) called with grounded runner and dt=1/60"
+        should: "runner y stays on platform surface (no gravity applied while grounded)"
+      - given: "physicsStep called with airborne runner and vy=0 (apex) and dt=1/60"
+        should: "vy increases by gravity*dt (1800/60=30 px/s²) — runner accelerates downward"
+      - given: "runner y exceeds kill plane (platform + 200 px below viewport)"
+        should: "physicsStep returns phase:'lost'"
+      - given: "runner x reaches finishLineX"
+        should: "physicsStep returns phase:'won'"
+      - given: "runner is grounded and tap fires"
+        should: "vy set to -620 px/s (jump impulse), phase set to 'airborne'"
+      - given: "runner is airborne and tap fires"
+        should: "phase remains 'airborne', vy unchanged, runner wiggle GSAP tween fires (±4px x over 150ms)"
+      # level-generator
+      - given: "generateLevel({levelNumber:1, seed:48271}) is called"
+        should: "returns tiles array with 5-tile start platform, no barriers, all gaps ≤ 1 tile"
+      - given: "generateLevel({levelNumber:3, seed:144813}) is called"
+        should: "returns at least one barrier in tiles"
+      - given: "same seed called twice"
+        should: "produces identical tile layout (deterministic)"
+      - given: "levelNumber=1 layout"
+        should: "max gap ≤ runnerSpeed*jumpAirTime (solvability check passes)"
+      # tap-input-handler
+      - given: "stage receives pointertap while gamePhase='idle'"
+        should: "ECS db.transactions.jump() fires, gamePhase changes to 'airborne'"
+      - given: "stage receives pointertap while gamePhase='won'"
+        should: "no action taken (input blocked)"
+      - given: "stage receives pointertap while gamePhase='animating'"
+        should: "no action taken (input blocked)"
+      # core-interaction CoS: interaction archetype document
+      - given: "src/game/dash-runner/interaction-archetype.md exists"
+        should: "file specifies: interaction type=Tap, pointer sequence, cancel behavior, invalid-gesture feedback (wiggle), feel description"
+      # animated-dynamics CoS: no instant state changes
+      - given: "runner transitions from grounded to airborne"
+        should: "y position changes frame-by-frame via physics ticker (not instant jump to destination)"
+    test_loci:
+      - describe: "physicsStep — core physics"
+        file: "tests/dash-runner/physics/physicsStep.test.ts"
+        cases:
+          - "grounded runner stays on platform"
+          - "airborne runner accelerates at gravity 1800 px/s²"
+          - "kill plane triggers phase lost"
+          - "finish line triggers phase won"
+          - "jump impulse sets vy to -620 on grounded tap"
+          - "airborne tap leaves vy unchanged"
+      - describe: "levelGenerator — procedural level"
+        file: "tests/dash-runner/level/levelGenerator.test.ts"
+        cases:
+          - "level 1 has 5-tile start platform"
+          - "level 1 has no barriers"
+          - "level 3 has at least one barrier"
+          - "same seed produces identical layout"
+          - "solvability check passes for level 1"
+          - "level 10 has barrier chance capped at 40%"
+      - describe: "tapInputHandler — input gating"
+        file: "tests/dash-runner/GameController.input.test.ts"
+        cases:
+          - "idle phase: tap fires jump transaction"
+          - "airborne phase: tap does not fire jump, wiggle fires"
+          - "won phase: tap is ignored"
+          - "animating phase: tap is ignored"
+    files:
+      state:
+        - src/game/dash-runner/physics/physicsStep.ts
+        - src/game/dash-runner/physics/types.ts
+        - src/game/dash-runner/level/levelGenerator.ts
+        - src/game/dash-runner/level/rng.ts
+        - src/game/dash-runner/level/types.ts
+        - src/game/dash-runner/state/DashPlugin.ts   # add jump transaction
+        - src/game/dash-runner/interaction-archetype.md
+      integration:
+        - src/game/dash-runner/GameController.ts   # wire ticker, tap handler, physicsStep
+      test:
+        - tests/dash-runner/physics/physicsStep.test.ts
+        - tests/dash-runner/level/levelGenerator.test.ts
+        - tests/dash-runner/GameController.input.test.ts
+    how:
+      - >
+        physicsStep(state, dt) is a pure function: receives PhysicsState (runnerX, runnerY,
+        vy, grounded, gamePhase, tiles), returns new PhysicsState. No Math.random, no Pixi
+        imports, no DOM. Gravity 1800 px/s², jump impulse -620 px/s, kill plane detection,
+        finish line detection. AABB collision: runner bottom vs tile tops (grounding), runner
+        sides vs barrier sides (loss). Returns {phase:'won'|'lost'|'airborne'|'idle'} on state change.
+      - >
+        levelGenerator uses mulberry32 seeded RNG (seed = levelNumber * 48271).
+        Platform 2-8 tiles, gap 1-3 tiles, total length 20+(levelNumber*5) tiles.
+        Solvability: maxGap ≤ runnerSpeed * jumpAirTime (jumpAirTime ≈ 2*|-620|/1800 ≈ 0.689 s).
+        Retry up to 20x with seed+1 offset. Fallback: full solid platform.
+        Barrier chance: max(0, (levelNumber-2)*0.08) capped at 0.40.
+      - >
+        GameController wires GSAP ticker.add(physicsLoop). tap handler: app.stage.eventMode='static';
+        app.stage.on('pointertap', onTap). onTap: if phase==='idle' → db.transactions.jump();
+        else if phase==='airborne' → runnerRenderer.wiggle(). Input blocked when phase is
+        won|lost|animating. Single listener only — no second input path.
+    risk: HIGH
+    risk_reason: >
+      Physics drives all game state. Incorrect gravity/collision cascades to wrong outcomes.
+      Pure function isolation makes it testable; GSAP ticker integration is the risky seam.
+      Verify: physicsStep unit tests pass before wiring to ticker.
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at src/game/dash-runner/GameController.ts (ticker + tap handler)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk: core-interaction (one-gesture tap, pointer events, airborne wiggle visible), animated-dynamics (runner y changes per-frame not instant)"
+      - "touch targets ≥ 44 px: full-screen tap area (eventMode static on stage)"
+      - "interaction-archetype.md written with all required fields"
+      - "bun run build + bun test pass within 3 fix cycles"
+      - "no Math.random in physicsStep.ts or levelGenerator.ts (seeded RNG only)"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 3 — P0 World Renderer + Runner Renderer (Visual Core Loop)
+  # "Player can see the scrolling world and character while playing"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 3
+    name: "Renderers — World Scrolling + Runner Visual"
+    priority: P0
+    player_visible: >
+      Player sees a scrolling world: platform tiles (scene-platform or 🟫 emoji
+      fallback) move right-to-left. Gaps are empty space. Runner (scene-runner or
+      🟦 emoji fallback) is pinned at 25% from left, y updates each frame per physics.
+      Jump arc is visible. Win: runner flashes white 100ms. Loss: runner falls 200ms.
+      Finish line is a bright vertical stripe (scene-finish or | emoji). Barriers are
+      visible on platform tops (scene-barrier or 🟥 emoji).
+    features: [world-renderer, runner-renderer, canvas-art-bundles]
+    cos_covered: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    acceptance:
+      # world-renderer
+      - given: "WorldRenderer.init(tiles, viewportW, viewportH) is called"
+        should: "platform tile sprites fill the bottom platform zone (bottom 30% of viewport), scrolling right-to-left at runnerSpeed px/s"
+      - given: "a tile scrolls off-screen left (x < -tileWidth)"
+        should: "the tile is repositioned to the right edge (tile pool recycled — no new object created)"
+      - given: "a gap in the level layout"
+        should: "no tile sprite at that x position — gap is visible empty space"
+      - given: "a barrier in the tile data"
+        should: "barrier sprite displayed atop the platform tile at correct position (barrier bottom = platform top)"
+      - given: "finish line tile in layout"
+        should: "finish-line sprite displayed as bright vertical stripe, visually distinct from platform"
+      # runner-renderer
+      - given: "RunnerRenderer.init(container, viewportW) called"
+        should: "runner sprite/emoji placed at x=viewportW*0.25, y=groundY, visible above background"
+      - given: "RunnerRenderer.updatePosition(y) called"
+        should: "runner sprite y updates to new value (reflects physics state)"
+      - given: "RunnerRenderer.playWinFlash() called"
+        should: "GSAP tween: pixi.tint→0xffffff over 100ms, then restore original tint"
+      - given: "RunnerRenderer.destroy() called"
+        should: "gsap.killTweensOf(runnerSprite) fires before removeChild and destroy — no tween fires on dead sprite"
+      # canvas-art-bundles
+      - given: "asset-manifest.ts includes a 'scene-dash' bundle"
+        should: "bundle prefix is 'scene-*' (not theme-* or core-*), aliases include: bg-neon-grid, piece-platform, piece-barrier, ui-finish-line, character-runner"
+      - given: "atlas-scene-dash.json is structured"
+        should: "single atlas json contains all 5 sprite definitions (single draw call)"
+      # canvas CoS: visual distinctiveness
+      - given: "game renders"
+        should: "runner, platform tile, barrier, and finish line are all visually distinct from each other (different color/shape/size)"
+      # animated-dynamics CoS: runner identity stable
+      - given: "runner changes y position via physics"
+        should: "same sprite object is repositioned (not destroyed/recreated per frame)"
+      # design-smell: unlabeled shapes
+      - given: "scene-dash bundle is missing (no assets)"
+        should: "fallback renders emoji text (🟦 runner, 🟫 platform, 🟥 barrier, | finish) — not blank unlabeled Graphics shapes"
+    test_loci:
+      - describe: "WorldRenderer — tile pool + scrolling"
+        file: "tests/dash-runner/renderers/WorldRenderer.test.ts"
+        cases:
+          - "init places tile sprites in platform zone"
+          - "off-screen tile is recycled to right edge"
+          - "gap position has no tile sprite"
+          - "barrier sprite placed at correct platform-top position"
+          - "finish-line sprite distinct from platform sprite"
+      - describe: "RunnerRenderer — position sync and win flash"
+        file: "tests/dash-runner/renderers/RunnerRenderer.test.ts"
+        cases:
+          - "init places runner at 25% x"
+          - "updatePosition updates y"
+          - "playWinFlash fires GSAP tween to white tint"
+          - "destroy kills tweens before destroying sprite"
+          - "fallback emoji visible when atlas unavailable"
+      - describe: "canvas-art-bundles — manifest validation"
+        file: "tests/dash-runner/assets/manifest.test.ts"
+        cases:
+          - "scene-dash bundle has scene-* prefix"
+          - "all 5 aliases present in bundle"
+          - "atlas json is single file (single draw call)"
+    files:
+      state: []
+      integration:
+        - src/game/dash-runner/renderers/WorldRenderer.ts
+        - src/game/dash-runner/renderers/RunnerRenderer.ts
+        - src/game/asset-manifest.ts
+        - src/game/dash-runner/assets/atlas-scene-dash.json
+        - src/game/dash-runner/GameController.ts   # wire renderers into game loop
+      test:
+        - tests/dash-runner/renderers/WorldRenderer.test.ts
+        - tests/dash-runner/renderers/RunnerRenderer.test.ts
+        - tests/dash-runner/assets/manifest.test.ts
+    how:
+      - >
+        WorldRenderer manages a pool of Sprite objects (pre-allocated to fill
+        viewport + 2 tiles buffer). On each ticker frame: advance each tile x by
+        -(runnerSpeed * delta). Tiles with x < -tileWidth are repositioned to
+        rightmostTile.x + tileWidth (no new allocations in tick). Barrier sprites
+        are children of their parent platform sprite (offset y = -barrierHeight).
+        Finish line sprite is positioned at finishLineX from layout data.
+      - >
+        RunnerRenderer holds a single Sprite (or Text emoji fallback). x fixed at
+        viewportW*0.25. y updated each frame from physics state via updatePosition(y).
+        Win flash: gsap.to(sprite, {pixi:{tint:0xffffff}, duration:0.1, onComplete:
+        ()=>sprite.tint=originalTint}). Destroy: gsap.killTweensOf(sprite) first.
+      - >
+        atlas-scene-dash.json: define stub JSON atlas with 5 frames (placeholders
+        at correct dimensions). asset-manifest.ts: add bundle id='scene-dash',
+        prefix='scene-*', src='atlas-scene-dash.json'. Emoji fallback active when
+        bundle load fails — GameController passes a 'useFallback' flag to renderers.
+    risk: MEDIUM
+    risk_reason: >
+      Tile pool recycling must never allocate in tick() (guardrail #6). Emoji
+      fallbacks must be readable (design-smell check). Renderer destroy order must
+      kill tweens before removing from scene (guardrail #18).
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call sites exist in WorldRenderer.ts, RunnerRenderer.ts, GameController.ts"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk: canvas (runner ≥32×48 visible, distinct sprites, emoji fallback readable), animated-dynamics (runner repositioned not recreated, tile pool recycled)"
+      - "no object created in ticker tick() callback (pre-allocated pool only)"
+      - "RunnerRenderer.destroy() calls gsap.killTweensOf before removeChild"
+      - "asset bundle prefix is scene-* (not theme-*)"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 4 — P0 Win/Loss Transitions + HUD + Scoring (Complete Core Loop)
+  # "Player experiences win/loss feedback, sees score, and lands on results"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 4
+    name: "Complete Core Loop — Win/Loss Transitions + HUD + Scoring"
+    priority: P0
+    player_visible: >
+      Win: white flash + black fade (300ms) → results screen (Level Complete).
+      Loss: runner falls 200ms + black fade (200ms) → results screen (Try Again?).
+      During play: HUD shows "Level 1" (top-left) and a progress bar (top-center).
+      Results screen shows score (multiplicative formula) + levelsCleared.
+      Input is disabled during transition animations.
+    features: [hud-renderer, win-loss-transitions, scoring-system]
+    cos_covered: [canvas, animated-dynamics, core-interaction]
+    ux_zones:
+      thumb_zone: [out-of-reach, center]
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas, results-dom]
+    acceptance:
+      # hud-renderer
+      - given: "HudRenderer.init(container, viewportW, viewportH) is called"
+        should: "level text appears top-left, progress bar appears top-center, both within top 48px HUD zone"
+      - given: "HudRenderer.updateProgress(runnerX, finishLineX) called"
+        should: "progress bar width = viewportW * (runnerX / finishLineX), clamped 0–viewportW"
+      - given: "HUD renders"
+        should: "level text ≥ 16px, contrast ≥ 4.5:1 against 0x000000 background; HUD does not overlap WolfGames logo (bottom 64px)"
+      - given: "HUD renders at 390×844"
+        should: "top HUD (48px) + game canvas (732px) + bottom DOM (64px) = 844px — no overflow"
+      # win-loss-transitions
+      - given: "gamePhase transitions to 'won'"
+        should: "input blocked (phase='animating'), runner white flash fires (100ms), then black overlay fades in (200ms), then goto('results') is called"
+      - given: "gamePhase transitions to 'lost'"
+        should: "input blocked, runner continues falling for 200ms, then black overlay fades in (200ms), then goto('results') is called"
+      - given: "GameController.destroy() called during transition"
+        should: "gsap.killTweensOf fires on all active tweens before any destroy call — no 'cannot set property of null' error"
+      # scoring-system
+      - given: "player completes level 1 with runnerSpeed=180, retryCount=0"
+        should: "score = 1*1000*(180/180)*(1/(1+0*0.25)) = 1000"
+      - given: "player completes level 5 with runnerSpeed=240, retryCount=2"
+        should: "score = 5*1000*(240/180)*(1/(1+2*0.25)) = 5*1000*1.333*0.667 ≈ 4444"
+      - given: "score is displayed on results screen"
+        should: "ResultsScreen reads gameState.score() (bridged from ECS), displays formatted number"
+      # animated-dynamics: no instant state changes
+      - given: "win sequence fires"
+        should: "overlay alpha increases from 0 to 1 over 200ms (GSAP tween) — not instant"
+      # core-interaction CoS: input blocked during animation
+      - given: "overlay fade is animating (gamePhase='animating')"
+        should: "tap event does not trigger jump (input is blocked)"
+    test_loci:
+      - describe: "HudRenderer — layout and progress"
+        file: "tests/dash-runner/renderers/HudRenderer.test.ts"
+        cases:
+          - "level text is within top 48px"
+          - "progress bar width scales with runner position"
+          - "HUD does not extend below reserved_top = 48px (no overlap with game area)"
+          - "level text font size ≥ 16px"
+      - describe: "win-loss transitions — sequence and input blocking"
+        file: "tests/dash-runner/transitions.test.ts"
+        cases:
+          - "won: flash fires, overlay fades, goto('results') called"
+          - "lost: 200ms fall delay, overlay fades, goto('results') called"
+          - "tap during animating phase: ignored"
+          - "destroy during transition: no tween fires on destroyed sprite"
+      - describe: "scoring — multiplicative formula"
+        file: "tests/dash-runner/state/scoring.test.ts"
+        cases:
+          - "level 1, no retries: score = 1000"
+          - "level 5, 2 retries, speed 240: score ≈ 4444"
+          - "skilled player (no retries, high speed) scores 3× beginner (same level, 3 retries)"
+    files:
+      state:
+        - src/game/dash-runner/state/DashPlugin.ts   # add score transaction, finalizeScore action
+      integration:
+        - src/game/dash-runner/renderers/HudRenderer.ts
+        - src/game/dash-runner/GameController.ts   # wire transitions, overlay, score computation
+        - src/game/screens/ResultsScreen.tsx        # display score + levelsCleared
+      test:
+        - tests/dash-runner/renderers/HudRenderer.test.ts
+        - tests/dash-runner/transitions.test.ts
+        - tests/dash-runner/state/scoring.test.ts
+    how:
+      - >
+        HudRenderer: Pixi Text (levelText, 18px, 0xFFFFFF, bold) at x=8, y=8.
+        Pixi Graphics (progressBar bg 0x333333 rect, progressFill 0x00FFAA rect)
+        at x=viewportW/4, y=16, width=viewportW/2, height=12. updateProgress:
+        progressFill.width = max * (runnerX / finishLineX). No DOM in HudRenderer.
+      - >
+        Win sequence in GameController: set phase='animating' in ECS. Runner.playWinFlash().
+        gsap.delayedCall(0.1, ()=>{ overlay.alpha from 0→1 over 0.2s, onComplete: goto('results') }).
+        Loss sequence: wait 0.2s (runner falls via physics), then overlay 0→1 over 0.2s, goto('results').
+        Overlay: Pixi Graphics fullscreen rect 0x000000, added to ui-layer.
+      - >
+        Scoring: DashPlugin action finalizeScore(db) → reads currentLevel, runnerSpeed,
+        retryCount → computes levelScore = currentLevel*1000*(runnerSpeed/180)*(1/(1+retryCount*0.25))
+        → db.transactions.addScore(levelScore). bridgeEcsToSignals pushes score to gameState.setScore().
+        ResultsScreen reads gameState.score() and gameState.level() for display.
+    risk: MEDIUM
+    risk_reason: >
+      Transition timing and destroy order are critical. If overlay tween fires after
+      app.destroy(), reference error occurs. Ensure gsap.killTweensOf(overlay) in
+      GameController.destroy() before app.destroy(). HUD must stay within 48px zone.
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call sites exist in GameController.ts, HudRenderer.ts, ResultsScreen.tsx"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk: animated-dynamics (overlays tween not instant), core-interaction (input blocked during animating phase), canvas (HUD no overlap)"
+      - "touch targets ≥ 44px: progress bar is passive (no tap target)"
+      - "screen reserved_bottom_px=64 consumed: no HUD content below y=780"
+      - "gsap.killTweensOf(overlay) called in destroy before app.destroy()"
+      - "skilled player score ≥ 3× beginner on same level (scoring formula test)"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 5 — P1 Level Progression + Results Screen Branches
+  # "Player experiences 10-level progression, retry, and all-clear"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 5
+    name: "Level Progression + Results Screen Branches"
+    priority: P1
+    player_visible: >
+      Results screen shows three distinct branches: Level Complete (Next Level / See Results),
+      Loss (Try Again?), All-Clear (You finished! — after level 10). Retry reloads same
+      level seed (identical layout). Next Level increments currentLevel, loads next seed,
+      restarts game. After level 10 win, all-clear screen shows total levelsCleared + score.
+      Runner speed increases each level (+15 px/s, capped at 300).
+    features: [level-progression, results-screen, results-screen-visual-identity]
+    cos_covered: [skill-curve]
+    # skill-curve is gated at pass 'meta', NOT at 'core'. Flag as out-of-pass.
+    # These features are in scope (game mechanic) but skill-curve CoS is deferred.
+    # cos_covered is empty for this batch at pass=core; skill-curve walks in meta pass.
+    cos_covered: []
+    out_of_pass_cos: [skill-curve]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [next-level-button, retry-button, play-again-button]
+      feedback_surfaces: [results-dom]
+    acceptance:
+      # level-progression
+      - given: "player wins level 3 and taps Next Level"
+        should: "currentLevel becomes 4, runnerSpeed becomes 180+3*15=225, new level layout generated with seed=4*48271"
+      - given: "player loses and taps Retry"
+        should: "same level reloads (same seed, identical obstacle positions), retryCount increments"
+      - given: "player wins level 10 and taps See Results (all-clear)"
+        should: "goto('results') called with allClear=true, levelsCleared=10 displayed"
+      - given: "level 10: runnerSpeed = 180+9*15 = 315"
+        should: "runnerSpeed is capped at 300 (not 315)"
+      # results-screen
+      - given: "results screen opens after a loss (gamePhase='lost')"
+        should: "heading reads 'Try Again?' (not 'Game Over'), Retry button is primary CTA, font ≥ 16px"
+      - given: "results screen opens after level win (not all-clear)"
+        should: "heading reads 'Level [N] Complete!', Next Level button visible, See Results link visible"
+      - given: "results screen opens after all-clear (level 10 win)"
+        should: "heading reads 'You finished!', levelsCleared count shown, Play Again button visible"
+      # touch targets
+      - given: "Retry / Next Level / Play Again buttons render"
+        should: "each button has touch target ≥ 44×44 px in bottom thumb zone (center bottom)"
+      # results-screen-visual-identity
+      - given: "results screen renders"
+        should: "background is dark (not slate-900 default), accent color matches neon theme (0x00FFAA or similar), tone is friendly"
+    test_loci:
+      - describe: "level-progression — state transitions"
+        file: "tests/dash-runner/state/levelProgression.test.ts"
+        cases:
+          - "win level 3: currentLevel increments to 4"
+          - "speed after level 3 win: 225 px/s"
+          - "speed capped at 300 at level 10"
+          - "retry: same seed, retryCount incremented"
+          - "all-clear: levelsCleared=10, allClear=true"
+      - describe: "ResultsScreen — branch rendering"
+        file: "tests/dash-runner/screens/ResultsScreen.test.tsx"
+        cases:
+          - "loss branch: heading = 'Try Again?', Retry button present"
+          - "level-complete branch: heading = 'Level [N] Complete!', Next Level button present"
+          - "all-clear branch: heading = 'You finished!', Play Again button present"
+          - "all buttons have min height 44px"
+          - "loss heading never contains 'Game Over'"
+    files:
+      state:
+        - src/game/dash-runner/state/DashPlugin.ts   # nextLevel, retry, allClear transitions
+      integration:
+        - src/game/screens/ResultsScreen.tsx          # three-branch rendering
+        - src/game/dash-runner/GameController.ts      # wire level-advance and retry
+      test:
+        - tests/dash-runner/state/levelProgression.test.ts
+        - tests/dash-runner/screens/ResultsScreen.test.tsx
+    how:
+      - >
+        DashPlugin transitions: nextLevel(db) → currentLevel++, runnerSpeed = min(180+(currentLevel-1)*15, 300),
+        retryCount=0. retry(db) → retryCount++, gamePhase='idle' (seed unchanged → same layout).
+        setAllClear(db) → levelsCleared=currentLevel (only called after level 10 win).
+      - >
+        GameController: on goto('results'), pass outcome data via gameState signals
+        (bridged from ECS): level, score, levelsCleared, isAllClear, isLoss.
+        ResultsScreen.tsx reads these signals and renders appropriate branch.
+      - >
+        ResultsScreen branches: conditional SolidJS Show blocks on outcome type.
+        Loss: <h1>Try Again?</h1> + Retry button (primary, bottom center, min 44px).
+        LevelComplete: <h1>Level {N} Complete!</h1> + Next Level (primary) + See Results (secondary).
+        AllClear: <h1>You finished!</h1> + levelsCleared + score + Play Again.
+        Dark background (#0a0a1a) + neon accent (#00FFAA) consistent with game theme.
+    risk: MEDIUM
+    risk_reason: >
+      ResultsScreen state reads happen after ECS destroy — must use persistent signal
+      values (gameState.score() / gameState.level() remain after ECS teardown).
+      Test: signal values survive game destroy → screen mount cycle.
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call sites exist in ResultsScreen.tsx, GameController.ts"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "skill-curve CoS deferred to meta pass — documented in plan.carry_forward.cos_deferred_to_batch"
+      - "touch targets ≥ 44px for all result-screen CTAs"
+      - "reserved_bottom_px=64 consumed: result screen bottom not obscured by logo"
+      - "loss heading never contains 'Game Over'"
+      - "retry produces identical layout (same seed determinism test passes)"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # BATCH 6 — P1 Start/Title Screen + Visual Identity
+  # "Player experiences branded start screen and seamless game-entry flow"
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: 6
+    name: "Start Screen Visual Identity + Title Screen Complete"
+    priority: P1
+    player_visible: >
+      Start screen: "Dash Runner" title in neon accent font, large Play button
+      (accent color, ≥ 44×44px), one-line instruction "Tap to jump" in body text
+      (≥ 16px). Dark background (#0a0a1a). Audio unlock fires on Play tap.
+      Loading spinner/bar appears during GPU init. Game theme is recognizable
+      from the start screen alone.
+    features: [title-screen, start-screen-visual-identity]
+    cos_covered: [canvas]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [play-button]
+      feedback_surfaces: [start-screen-dom]
+    acceptance:
+      # title-screen
+      - given: "StartScreen renders"
+        should: "title text = 'Dash Runner', instruction text = 'Tap to jump', both visible (≥ 16px, ≥ 4.5:1 contrast on dark bg)"
+      - given: "player taps Play button"
+        should: "unlockAudio() is called (mobile audio gate cleared), then initGpu() fires"
+      - given: "GPU is loading after Play tap"
+        should: "loading indicator (spinner or progress bar) is visible — not blank screen"
+      - given: "Play button renders"
+        should: "button touch target ≥ 44×44 px, positioned in center/bottom thumb zone (not top)"
+      # start-screen-visual-identity
+      - given: "StartScreen renders"
+        should: "background is dark (#0a0a1a or equivalent), accent color on title and button is neon (#00FFAA or similar)"
+      - given: "StartScreen screenshot"
+        should: "game has distinct visual identity — not the generic green-screen placeholder"
+      # canvas CoS: theme visible from start screen
+      - given: "start screen is visible"
+        should: "a first-time player can identify the game's visual theme (dark neon grid aesthetic) without entering gameplay"
+    test_loci:
+      - describe: "StartScreen — content and UX"
+        file: "tests/dash-runner/screens/StartScreen.test.tsx"
+        cases:
+          - "title text is 'Dash Runner'"
+          - "instruction text is 'Tap to jump'"
+          - "Play button triggers unlockAudio then initGpu"
+          - "loading indicator appears during GPU init"
+          - "Play button height ≥ 44px"
+          - "background is dark (not green)"
+    files:
+      state: []
+      integration:
+        - src/game/dash-runner/screens/startView.ts    # audio unlock wiring
+        - src/game/screens/StartScreen.tsx              # title, instruction, visual identity
+      test:
+        - tests/dash-runner/screens/StartScreen.test.tsx
+    how:
+      - >
+        StartScreen.tsx: replace green-background placeholder. Background: dark (#0a0a1a).
+        Title: <h1 style="color:#00FFAA;font-size:2.5rem">Dash Runner</h1>.
+        Instruction: <p style="color:#fff;font-size:1rem">Tap to jump</p>.
+        Play button: onClick → unlockAudio() then props.onPlay(). Styled with neon
+        accent border/bg, min-height 44px, min-width 200px.
+      - >
+        Loading indicator: Show block in SolidJS conditional on isLoading() signal.
+        Display a CSS spinner (border-radius 50% rotation animation — DOM only,
+        no Pixi, pre-GPU). Disappears when GPU init completes.
+      - >
+        startView.ts: wire unlockAudio() import from useAssets(). On initGpu callback,
+        show loading state. Pass cleanup to GameController destroy.
+    risk: MEDIUM
+    risk_reason: >
+      Audio unlock must fire BEFORE any audio playback attempts. Loading state
+      must not leak into game screen (cleanup in onPlay callback). Visual contrast
+      must pass 4.5:1 on dark background (verify with contrast ratio check).
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call sites exist in StartScreen.tsx, startView.ts"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk: canvas (neon theme identity visible on start screen)"
+      - "Play button touch target ≥ 44×44px in thumb zone (center, not top)"
+      - "unlockAudio fires before initGpu (mobile audio gate)"
+      - "loading indicator visible during GPU init (not blank screen)"
+      - "instruction 'Tap to jump' present and ≥ 16px, ≥ 4.5:1 contrast"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Plan warnings — collision resolutions + self-audit
+# ─────────────────────────────────────────────────────────────────────────
+warnings:
+  # ── Collision resolutions (all 5 from gdd-analysis.yml.warnings[]) ────
+  - >
+    collision-resolved:game-state-source-of-truth — skill-wins (ecs-state.mdc §single-source-of-truth);
+    gdd-ask=implied-signal-state dropped. DashPlugin owns ECS state; src/game/state.ts
+    signals become bridge targets only via bridgeEcsToSignals().
+  - >
+    collision-resolved:game-controller-mode — skill-wins (guardrail #1: no DOM in GPU game after initGpu);
+    gdd-ask=pixi-gpu-game retained (GDD and rule agree on Pixi); scaffold=dom-mode-stub internals
+    replaced with full Pixi Application. Contract shape (setupGame→GameController) preserved.
+  - >
+    collision-resolved:airborne-tap-feedback — skill-wins (core-interaction CoS: invalid gestures
+    must produce visible feedback); gdd-ask=silent-ignore dropped. Resolution: runner wiggle
+    (±4px x-oscillation, 150ms GSAP tween) on airborne tap. No double-jump preserved.
+  - >
+    collision-resolved:scoring-dimensions — skill-wins (scoring CoS core pass: ≥2 multiplicative
+    dimensions required); gdd-ask=levels-cleared-only dropped. Resolution: multiplicative formula
+    levelScore = levelsCleared*1000*speedMultiplier*retryPenaltyFactor. levelsCleared still displayed.
+  - >
+    collision-resolved:results-screen-heading — skill-wins (guardrail #15: no placeholder/scaffold
+    content in shipped code; scaffold 'Game Over' heading is placeholder). GDD content ('Try Again?',
+    'Level [N] Complete!', 'You finished!') is the real copy and replaces the scaffold placeholder.
+  # ── Self-audit findings ───────────────────────────────────────────────
+  - >
+    self-audit-pass: src/core/ read-only — no batches[].files.* entry lands under src/core/.
+    All new files land under src/game/dash-runner/, src/game/screens/, src/modules/, or tests/.
+  - >
+    self-audit-pass: no-stubs/no-placeholders — resolved_questions_scalars contain only concrete
+    decisions (slug, scoring formula, wiggle spec). No TBD, placeholder, or stub values.
+  - >
+    self-audit-pass: slug substitution complete — no <game-root> or mygame literal in any
+    batches[].files.* entry. All game-specific paths use src/game/dash-runner/ prefix.
+  - >
+    self-audit-pass: collision-resolution coverage — all 5 collision: entries from
+    gdd-analysis.yml.warnings[] have matching collision-resolved: entries above.
+  - >
+    self-audit-pass: integration-file coverage — every file in batches[i].files.integration
+    is exercised by at least one acceptance[].should row.
+  - >
+    out-of-pass: skill-curve CoS (gated at meta pass) is deferred for features level-progression
+    and level-generator. Batch 5 records these features but omits skill-curve from cos_covered.
+    Deferred to meta pass per conditions/index.md.
+
+completeness_gaps: []
+# No completeness gaps: all open questions are resolved with concrete decisions.
+# Scoring formula, game slug, and airborne feedback all have specific values.

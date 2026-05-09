@@ -13,11 +13,6 @@ vi.mock('@wolfgames/components/solid', () => ({
   useSignal: (s: { get: () => unknown }) => s.get,
 }));
 
-vi.mock('solid-js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('solid-js')>();
-  return { ...actual };
-});
-
 import { setupGame, setupStartScreen } from '~/game/mygame';
 import type { SetupGame, SetupStartScreen } from '~/game/mygame-contract';
 

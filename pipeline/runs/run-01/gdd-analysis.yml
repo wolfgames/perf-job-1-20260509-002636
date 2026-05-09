@@ -1,0 +1,662 @@
+# gdd-analysis.yml — Structured feature delta for Dash Runner
+# Written by phase 20 (analyze). Read by plan, implement, player-flow, stabilize.
+
+game: "Dash Runner"
+counts:
+  exists: 2
+  partial: 2
+  new: 11
+  conflict: 2
+  content_gap: 2
+conflict_breakdown:
+  reuse: 0
+  adapt: 2
+  replace: 0
+high_risk: 2
+open_questions: 3
+
+features:
+
+  # ── EXISTING FEATURES ────────────────────────────────────────────────────
+
+  - id: screen-flow-wiring
+    name: "SolidJS Screen Flow (loading/start/game/results)"
+    status: exists
+    risk: LOW
+    complexity: low
+    lifecycle_phase: BOOT
+    cos_required: []
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - src/game/config.ts
+      - src/game/screens/index.ts
+    dependencies: []
+    notes: >
+      Four screen IDs (loading, start, game, results) are wired and match the
+      scaffold contract exactly. Lifecycle contract is satisfied. No changes needed
+      to the routing layer — plan renames mygame slug inside game root only.
+
+  - id: asset-coordinator
+    name: "Asset Coordinator with Bundle Loading"
+    status: exists
+    risk: LOW
+    complexity: low
+    lifecycle_phase: BOOT
+    cos_required: []
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - src/game/asset-manifest.ts
+    dependencies: []
+    notes: >
+      Coordinator infrastructure exists and loads theme-branding. Game-specific
+      scene-* bundles for platform, barrier, and finish-line sprites are absent —
+      those are tracked under feature canvas-art-bundles (new).
+
+  # ── PARTIAL FEATURES ─────────────────────────────────────────────────────
+
+  - id: title-screen
+    name: "Title Screen (start screen)"
+    status: partial
+    risk: MEDIUM
+    complexity: low
+    lifecycle_phase: TITLE
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [play-button]
+      feedback_surfaces: [start-screen-dom]
+    affected_files:
+      - <game-root>/screens/startView.ts
+      - src/game/screens/StartScreen.tsx
+    dependencies: []
+    ux:
+      discovery: >
+        Player sees game name "Dash Runner" and large Play button immediately
+        on first open; one-line instruction ("Tap to jump") acts as in-situ
+        tutorial cue.
+      feedback: >
+        Tap on Play triggers audio unlock, GPU init, and transition to PLAY.
+        Must surface loading progress (spinner or bar) during GPU init.
+      onboarding: >
+        Single-line instruction on title screen is the only onboarding — no modal
+        tutorial. Must be visible at a glance (≥ 16 px, ≥ 4.5:1 contrast).
+    notes: >
+      Infrastructure (DOM, Play button, goto('game')) exists as a green-screen
+      placeholder. GDD requires: game title "Dash Runner", a large Play button,
+      and a one-line instruction "Tap to jump". Content gap for title text and
+      instruction copy. Audio unlock on Play tap is a scaffold contract requirement
+      (mobile-constraints.mdc). Touch target for Play button must be ≥ 44×44 px.
+
+  - id: results-screen
+    name: "Results Screen (outcome — win/loss/all-clear)"
+    status: partial
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: OUTCOME
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [primary-action-button, secondary-action-button]
+      feedback_surfaces: [results-dom]
+    affected_files:
+      - src/game/screens/ResultsScreen.tsx
+    dependencies: [game-state-ecs]
+    ux:
+      discovery: >
+        Screen branches: Level Complete ("Next Level" / "See Results"), Loss
+        ("Retry"), and All-Clear ("Play Again"). Player always sees a clear
+        primary CTA in bottom thumb zone.
+      feedback: >
+        Fade-in from black after GSAP overlay fade from game screen (150 ms).
+        Level-complete text and button animate in (per win-sequence in GDD).
+      onboarding: >
+        Loss screen uses "Try Again?" framing (never "Game Over") with friendly
+        tone. No penalty, no countdown, no ad gate. Retry is the primary action.
+    notes: >
+      Existing ResultsScreen shows a generic "Game Over" heading and score display.
+      GDD requires three distinct outcome branches sharing the results screen ID:
+      (1) Level Complete — "Level [N] Complete!", Next Level / See Results buttons;
+      (2) Loss — "Try Again?" text, Retry button;
+      (3) All-Clear — "You finished!", levels cleared count, Play Again button.
+      The "Game Over" heading is a content-gap / tone violation against GDD intent.
+      State reading must come from ECS bridge once game-state-ecs feature is built.
+      Screen ID remains "results" (scaffold-valid).
+
+  # ── CONFLICT FEATURES ─────────────────────────────────────────────────────
+
+  - id: game-state-signals
+    name: "Game State Signals (score, level, reset)"
+    status: conflict
+    conflict_sub: adapt
+    risk: MEDIUM
+    complexity: med
+    cos_required: []
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - src/game/state.ts
+      - <game-root>/state/DashPlugin.ts
+    dependencies: []
+    ux:
+      discovery: "N/A — internal state, no direct player-facing surface."
+      feedback: "Level number indicator and progress bar in HUD read from state."
+      onboarding: "N/A"
+    notes: >
+      Existing state.ts uses raw SolidJS signals as the source of truth. ECS-state
+      rule (ecs-state.mdc) mandates ECS as source of truth with signals as DOM
+      bridge only. Collision flagged (see warnings[]). Plan resolution: adapt the
+      existing signals into a bridgeEcsToSignals() pattern backed by a new ECS
+      plugin (DashPlugin.ts). Existing state.ts signals become bridge targets.
+      Dash Runner state needed: currentLevel (1-10), gamePhase (idle/airborne/
+      animating/won/lost), runnerSpeed, retryCount. Score is not a primary metric
+      in the GDD — no leaderboard-striation scoring dimension described. Open
+      question logged (see open_questions[]).
+
+  - id: game-controller-stub
+    name: "Game Controller Stub (DOM mode)"
+    status: conflict
+    conflict_sub: adapt
+    risk: HIGH
+    complexity: high
+    cos_required: [core-interaction, animated-dynamics, canvas]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas, hud-overlay]
+    affected_files:
+      - <game-root>/screens/gameController.ts
+      - <game-root>/GameController.ts
+      - <game-root>/renderers/WorldRenderer.ts
+      - <game-root>/renderers/RunnerRenderer.ts
+      - <game-root>/renderers/HudRenderer.ts
+      - <game-root>/state/DashPlugin.ts
+    dependencies: [game-state-ecs, physics-loop, level-generator, pixi-app-init]
+    ux:
+      discovery: >
+        Runner character is always visible at 25% from left edge; scrolling world
+        establishes speed and direction immediately on screen entry. No tutorial
+        needed — player taps and sees the runner jump within one second.
+      feedback: >
+        Tap → runner jump arc (GSAP physics ticker, ~640 ms arc). Landing →
+        immediate ground snap (0 ms, deterministic). Loss → fall + 200 ms
+        continuation, then 200 ms screen fade. Win → 100 ms white flash,
+        200 ms fade.
+      onboarding: >
+        Constrained first encounter: runner auto-runs into first safe zone
+        (5-tile spawn platform), player has time to see speed and tap once
+        before first gap. No tooltip needed — physics teaches itself.
+    notes: >
+      Existing stub is DOM mode (document.createElement). GDD requires Pixi GPU
+      renderer (rules mandate Pixi for game canvas; DOM forbidden in mygame after
+      initGpu). Conflict sub: adapt — the contract shape (setupGame → GameController
+      with init/destroy/ariaText) is reused; the internals are replaced with a
+      full Pixi-based implementation. This is the central integration point for
+      the entire game. HIGH risk: touches viewport layout, Pixi init, ECS wiring,
+      renderer lifecycle. Every other game feature depends on this feature.
+
+  # ── CONTENT-GAP FEATURES ─────────────────────────────────────────────────
+
+  - id: start-screen-visual-identity
+    name: "Start Screen Visual Identity (neon grid theme)"
+    status: content-gap
+    risk: MEDIUM
+    complexity: low
+    lifecycle_phase: TITLE
+    cos_required: [canvas]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [play-button]
+      feedback_surfaces: [start-screen-dom]
+    affected_files:
+      - <game-root>/screens/startView.ts
+      - src/game/screens/StartScreen.tsx
+    dependencies: [title-screen]
+    ux:
+      discovery: >
+        Visual theme (neon grid, flat colors, dark background) communicates
+        game identity before player taps Play.
+      feedback: "N/A — static screen."
+      onboarding: "N/A"
+    notes: >
+      Infrastructure exists (green background placeholder). GDD specifies a
+      stripped-down neon grid world with sparse geometry and flat colors. The
+      start screen must express this aesthetic: dark background, neon accent
+      typography for "Dash Runner", accent-colored Play button. This is a
+      content-gap: the component exists but visual identity doesn't match GDD theme.
+
+  - id: results-screen-visual-identity
+    name: "Results Screen Visual Identity (branded outcome screens)"
+    status: content-gap
+    risk: LOW
+    complexity: low
+    lifecycle_phase: OUTCOME
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [primary-action-button]
+      feedback_surfaces: [results-dom]
+    affected_files:
+      - src/game/screens/ResultsScreen.tsx
+    dependencies: [results-screen]
+    ux:
+      discovery: "Distinct Level Complete vs Loss vs All-Clear visual states."
+      feedback: "Staggered reveal: overlay fade → title text → CTA button."
+      onboarding: "N/A"
+    notes: >
+      Generic slate-900 gradient and "Game Over" heading. GDD defines three
+      branches with specific copy and button labels. Visual identity must match
+      neon grid aesthetic. Tone of Loss screen is explicitly friendly ("Try Again?"
+      never "Game Over").
+
+  # ── NEW FEATURES ──────────────────────────────────────────────────────────
+
+  - id: pixi-app-init
+    name: "Pixi Application Initialization"
+    status: new
+    risk: HIGH
+    complexity: med
+    cos_required: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/GameController.ts
+    dependencies: []
+    ux:
+      discovery: "Canvas fills viewport after Play tap on title screen."
+      feedback: "Seamless transition from DOM start screen to GPU canvas."
+      onboarding: "N/A — transparent to player."
+    notes: >
+      No Pixi Application exists. Must create Application with:
+      resizeTo: the game container div, resolution: Math.min(devicePixelRatio, 2)
+      (mobile-constraints.mdc cap), background: 0x000000 (neon grid world).
+      Portrait orientation 9:16 reference, 360×640 logical px corridor.
+      Layer stack: bg-layer (eventMode none), world-layer (passive), ui-layer (passive).
+      Ticker drives physics integration each frame. initGpu() in the start screen
+      triggers GPU init; assets load before game screen activates.
+
+  - id: physics-loop
+    name: "Physics Loop (runner movement, gravity, jump, collision)"
+    status: new
+    risk: HIGH
+    complexity: high
+    cos_required: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/physics/physicsStep.ts
+      - <game-root>/state/DashPlugin.ts
+    dependencies: [pixi-app-init, game-state-ecs]
+    ux:
+      discovery: >
+        Runner moves rightward automatically from first frame — player immediately
+        understands direction. First gap is not reachable until player taps.
+      feedback: >
+        Jump arc visible in ~16 ms (next frame). Landing is immediate snap
+        (0 ms, deterministic). Fall-off continues for 200 ms before screen fade.
+      onboarding: >
+        Spawn platform is 5 tiles — player has run-up time to feel speed before
+        first jump is needed. Jump arc is forgiving (~640 ms air time).
+    notes: >
+      Core physics system — pure function step(state, dt) → newState. Rules:
+      gravity 1800 px/s² when airborne; jump impulse −620 px/s on grounded tap;
+      no double-jump; landing snap 0 ms. Runner fixed at 25% from left edge
+      (camera scrolls world). Kill plane: platform surface + 200 px below viewport
+      bottom. Physics must NOT use Math.random(), Pixi imports, or DOM. Runs on
+      GSAP ticker (no requestAnimationFrame — guardrail #3). State written to ECS.
+      Collision detection: AABB for runner vs tile tops (grounding), runner vs
+      barrier sides (loss), runner vs finish line (win).
+
+  - id: level-generator
+    name: "Procedural Level Generator"
+    status: new
+    risk: MEDIUM
+    complexity: high
+    cos_required: [core-interaction, skill-curve]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - <game-root>/level/levelGenerator.ts
+      - <game-root>/level/rng.ts
+    dependencies: []
+    ux:
+      discovery: >
+        Levels 1-2 have no barriers and max 1-tile gaps — gradual difficulty
+        reveals mechanics sequentially (gap → barrier).
+      feedback: "N/A — generator runs before play starts."
+      onboarding: >
+        Level 1 seed produces guaranteed safe spawn zone (5-tile start platform).
+        Barrier mechanic introduced naturally at level 3 without explicit tutorial.
+    notes: >
+      Pure function generator — NO Math.random(), uses seeded LCG or mulberry32
+      (ECS-state purity rule). Seed formula: levelNumber * 48271. Level length:
+      20 + (levelNumber * 5) tiles. Platform segment 2-8 tiles, gap 1-3 tiles.
+      Solvability check: max gap ≤ runnerSpeed * jumpAirTime. Retry up to 20x
+      with seed offset +1 per attempt. Fallback: single solid platform full length.
+      Barrier chance: max(0, (levelNumber - 2) * 8%) capped at 40%. Levels 1-2
+      barrier-free. Must be deterministic — same seed always produces same layout.
+
+  - id: world-renderer
+    name: "World Renderer (scrolling platform, tiles, barriers, finish line)"
+    status: new
+    risk: MEDIUM
+    complexity: high
+    cos_required: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/renderers/WorldRenderer.ts
+    dependencies: [pixi-app-init, canvas-art-bundles, level-generator]
+    ux:
+      discovery: >
+        World scrolls right-to-left; platforms occupy bottom 30% of viewport;
+        gaps are visually empty space; barriers sit atop platforms (color contrast).
+        Player reads the layout 0.5-1 s ahead at play speed.
+      feedback: >
+        Platform tiles tile seamlessly. Barrier is visually distinct from platform.
+        Finish line is a bright vertical stripe that draws attention.
+      onboarding: "Layout teaches by showing ahead-of-time what's coming."
+    notes: >
+      Renders: platform tiles (scene-platform atlas, 64×24 px), barrier obstacles
+      (scene-barrier, 32×32 px on platform top), finish line (scene-finish, 8×96 px
+      bright accent). Runner is pinned at 25% from left — world scrolls at runner
+      speed. Tile pool recycling: off-screen-left tiles repositioned to right edge
+      (no per-frame allocation; guardrail #6). Background: dark neon grid, flat
+      color (no filters; guardrail #13). Texture atlases only (guardrail #7).
+
+  - id: runner-renderer
+    name: "Runner Renderer (player character visual)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    cos_required: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/renderers/RunnerRenderer.ts
+    dependencies: [pixi-app-init, canvas-art-bundles, physics-loop]
+    ux:
+      discovery: >
+        Runner is visually distinct (flat colored rectangle, 32×48 px) against
+        platform tiles. Pinned at 25% from left keeps player focus consistent.
+      feedback: >
+        Jump arc visible each frame (GSAP ticker updates y position).
+        Win flash: tint white 100 ms. Fall-off: continues falling off-screen 200 ms.
+      onboarding: "Immediate visual response to first tap — runner jumps."
+    notes: >
+      Runner: flat colored rectangle 32×48 px visual. Atlas sprite from scene-runner.
+      Positioned at x=25% viewport width, y computed from physics state. No bounce
+      animation on landing (0 ms snap per GDD — keeps physics deterministic). Win
+      state: gsap.to(runner, {pixi:{tint:0xffffff}, duration:0.1}). Destroy order:
+      tweens → removeChild → destroy (guardrail #18).
+
+  - id: hud-renderer
+    name: "HUD Renderer (level indicator + progress bar)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    cos_required: [canvas]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/renderers/HudRenderer.ts
+    dependencies: [pixi-app-init, game-state-ecs]
+    ux:
+      discovery: >
+        Level number top-left (always visible, low-priority zone — passive info).
+        Progress bar top-center (distance to finish). Both in top region per
+        UX guidelines (passive/glanceable, not thumb-obscured).
+      feedback: >
+        Progress bar updates each frame as world scrolls. Level number updates
+        on level transitions only.
+      onboarding: "Progress bar gives implicit sense of how far along player is."
+    notes: >
+      HUD lives on GPU (Pixi Text + Graphics), not DOM. Top region (≤ reserved_top_px
+      from prime = 0 reserved; WolfGames logo occupies bottom 64 px reserved_bottom_px).
+      Progress bar: Pixi Graphics rect, width proportional to runner x / finish line x.
+      Level number: Pixi Text, top-left. Font size ≥ 16 px, contrast ≥ 4.5:1 against
+      background. HUD must not overlap WolfGames logo at bottom.
+
+  - id: tap-input-handler
+    name: "Tap Input Handler (screen-wide jump trigger)"
+    status: new
+    risk: MEDIUM
+    complexity: low
+    cos_required: [core-interaction]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-screen-tap-area]
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/GameController.ts
+    dependencies: [pixi-app-init, physics-loop, game-state-ecs]
+    ux:
+      discovery: >
+        Tap anywhere on screen to jump — no button to find. Implicit through
+        interaction (player taps screen, runner jumps).
+      feedback: >
+        Runner jumps within one frame (~16 ms). If airborne, tap is silently
+        ignored (no rejection animation per GDD — airborne state is unambiguous
+        from runner position). Visual-only: runner rises.
+      onboarding: >
+        "Tap to jump" instruction on title screen is the sole explicit hint.
+        First gap forces the first jump — fail-safe teaching moment.
+    notes: >
+      Input: pointertap on stage (eventMode static on stage, passive on game layer).
+      Guard: only accepted when gamePhase === 'idle' (runner grounded). Airborne
+      tap is silently ignored per GDD — no shake/reject feedback (differs from
+      typical CoS core-interaction reject pattern, see warnings[]).
+      touch-action: none on canvas container (mobile-constraints.mdc).
+      Do NOT create a second input listener — route through single stage listener.
+
+  - id: canvas-art-bundles
+    name: "Scene Asset Bundles (platform, barrier, finish-line, runner sprites)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    cos_required: [canvas]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - src/game/asset-manifest.ts
+      - <game-root>/assets/atlas-scene-dash.json
+    dependencies: []
+    ux:
+      discovery: "Sprites must be visually distinct at a glance."
+      feedback: "N/A — asset pipeline."
+      onboarding: "N/A"
+    notes: >
+      GDD specifies atlas sprites: scene-platform (64×24 px), scene-barrier
+      (32×32 px), scene-finish (8×96 px bright accent), scene-runner (32×48 px
+      flat colored rect). Bundle prefix must be scene-* (GPU Pixi loader;
+      guardrail #5 — theme-* would silently fail). Single atlas = single draw call
+      (guardrail #7). Neon grid visual identity: dark bg, flat accent colors.
+      Asset filenames must follow naming convention: bg-neon-grid.png,
+      piece-platform.png, piece-barrier.png, ui-finish-line.png, character-runner.png.
+
+  - id: win-loss-transitions
+    name: "Win/Loss Transition Animations"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    cos_required: [animated-dynamics]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [pixi-canvas]
+    affected_files:
+      - <game-root>/GameController.ts
+      - <game-root>/renderers/RunnerRenderer.ts
+    dependencies: [pixi-app-init, runner-renderer, game-state-ecs]
+    ux:
+      discovery: "Win/loss are unambiguous state changes — world stops, fade to black."
+      feedback: >
+        Win: runner white flash 100 ms + screen fade 200 ms + results fade-in 150 ms.
+        Loss: runner falls 200 ms + screen fade 200 ms + results fade-in 150 ms.
+      onboarding: "N/A — transitions are feedback, not tutorial content."
+    notes: >
+      Win sequence: runner tint→white (100 ms GSAP) → black overlay fade (200 ms) →
+      goto('results') → fade-in from black (150 ms). Loss sequence: physics continues
+      200 ms (runner falls off-screen) → black overlay fade (200 ms) → goto('results')
+      → fade-in from black (150 ms). Overlay is a Pixi Graphics rect over entire
+      stage. gsap.killTweensOf() before any destroy call (guardrail #2/#18).
+      Input disabled during animation (gamePhase 'won' | 'lost' blocks tap handler).
+
+  - id: level-progression
+    name: "Level Progression (10 levels, retry, next-level, all-clear)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    cos_required: [skill-curve]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [next-level-button, retry-button, play-again-button]
+      feedback_surfaces: [results-dom]
+    affected_files:
+      - <game-root>/state/DashPlugin.ts
+      - src/game/screens/ResultsScreen.tsx
+    dependencies: [game-state-ecs, results-screen]
+    ux:
+      discovery: >
+        Level Complete screen shows level number and "Next Level" CTA clearly.
+        After level 10, "See Results" replaces "Next Level".
+      feedback: >
+        Retry uses same seed (identical layout). Player can verify it's the same
+        level by experiencing the same obstacle positions.
+      onboarding: >
+        Difficulty scales gradually: speed +15 px/s per level (capped at 300 px/s),
+        gap width increases, barriers appear level 3+. No explicit announcement
+        of difficulty increase — player discovers through play.
+    notes: >
+      10 levels procedurally generated. State machine: level 1→10, retry reuses
+      same seed (same layout). All-clear after level 10 navigates to results
+      screen with "You finished!" variant. Level selection is sequential only —
+      no level-select menu. Runner speed: 180 + (levelNumber-1)*15, capped 300
+      px/s. Difficulty scaling is GDD-specified (not configurable via tuning yet —
+      open question noted).
+
+  - id: scoring-system
+    name: "Scoring System (level completion tracking)"
+    status: new
+    risk: LOW
+    complexity: low
+    cos_required: [scoring]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [results-dom]
+    affected_files:
+      - <game-root>/state/DashPlugin.ts
+    dependencies: [game-state-ecs, level-progression]
+    ux:
+      discovery: "Total levels cleared shown on all-clear results screen."
+      feedback: "N/A — score is summary, not real-time HUD."
+      onboarding: "N/A"
+    notes: >
+      GDD does not specify a leaderboard score or points system — only "total
+      levels cleared" on the results screen. The scoring CoS (core pass scope:
+      base scoring formula with multiplicative dimensions) is partially applicable.
+      OPEN QUESTION: does the pipeline need a points-based score or is levels-cleared
+      the sole metric? Without a points formula the scoring CoS exit criteria (≥2
+      multiplicative dimensions) cannot be fully satisfied. Flagged as open question.
+      For now, classify score = levels_cleared; plan must resolve.
+
+conflicts:
+  - id: game-state-signals
+    sub: adapt
+    reason: >
+      Existing raw SolidJS signals (state.ts) become the bridge targets.
+      A new ECS plugin (DashPlugin) owns the source of truth per ecs-state.mdc.
+      bridgeEcsToSignals() connects them. Existing signal shape is preserved
+      for ResultsScreen reads after ECS teardown.
+
+  - id: game-controller-stub
+    sub: adapt
+    reason: >
+      Contract shape (setupGame → GameController with init/destroy/ariaText) is
+      preserved — it is the scaffold-mandated interface. DOM internals are replaced
+      with Pixi GPU implementation. gameMode changes from 'dom' to 'pixi'.
+
+risk_areas:
+  - feature: game-controller-stub
+    reason: >
+      Central integration point — touches Pixi init, ECS wiring, all renderers,
+      input handling, and lifecycle. Every other game feature depends on this.
+      HIGH risk per risk-rules.md (touches GameController, viewport/layout logic).
+
+  - feature: physics-loop
+    reason: >
+      Physics drives all game state. Incorrect gravity, jump impulse, or collision
+      detection cascades to wrong level outcomes. Integrates with GSAP ticker
+      (no rAF, guardrail #3), must be pure (no Math.random, guardrail #9),
+      must be deterministic for solvability checks.
+
+open_questions:
+  - id: q-game-name
+    question: "What slug should replace 'mygame'? GDD title is 'Dash Runner'."
+    context: >
+      plan phase resolves q-game-name. Likely slug: 'dash-runner'. All <game-root>
+      paths in this analysis will be substituted by plan. Do not infer the slug here.
+
+  - id: q-scoring-formula
+    question: >
+      Does Dash Runner require a points-based score with multiplicative dimensions,
+      or is 'levels cleared' the sole metric shown on the results screen?
+    context: >
+      The GDD specifies no points system, no combo multiplier, no leaderboard.
+      The scoring CoS (core pass) requires ≥2 multiplicative dimensions. This
+      game is a benchmarking tool — competitive scoring may be out of scope.
+      Plan must decide: (a) add a minimal time-based score (speed × level) to
+      satisfy CoS, or (b) treat levels-cleared as the score and document the
+      partial CoS gap.
+
+  - id: q-airborne-tap-feedback
+    question: >
+      Should an airborne tap produce any rejection feedback (visual/audio)?
+    context: >
+      GDD says airborne taps are ignored silently. core-interaction CoS requires
+      invalid actions to produce visible feedback (elastic snap-back, shake, flash
+      — not silence). This is a soft collision: GDD vs CoS guideline. Plan must
+      decide whether to add a subtle visual cue (runner wiggle, brief red tint)
+      while preserving GDD's "no double-jump" constraint, or document the partial
+      CoS gap.
+
+warnings:
+  - >
+    collision:game-state-source-of-truth — gdd=implied-signal-state vs
+    rule=ECS-source-of-truth (ecs-state.mdc §single-source-of-truth) — critical
+  - >
+    collision:game-controller-mode — gdd=pixi-gpu-game vs scaffold=dom-mode-stub
+    (src/game/mygame/screens/gameController.ts:gameMode:'dom') — critical
+    (guardrail #1: no DOM in GPU game code after initGpu)
+  - >
+    collision:airborne-tap-feedback — gdd=silent-ignore vs
+    rule=core-interaction-CoS (invalid gesture must produce visible feedback) — soft
+  - >
+    collision:scoring-dimensions — gdd=levels-cleared-only vs
+    rule=scoring-CoS (≥2 multiplicative dimensions at core pass) — soft
+  - >
+    collision:results-screen-heading — gdd="Try Again?" / "You finished!" vs
+    scaffold="Game Over" (src/game/screens/ResultsScreen.tsx:line21) — soft
+    (GDD sets tone explicitly; scaffold content is placeholder)

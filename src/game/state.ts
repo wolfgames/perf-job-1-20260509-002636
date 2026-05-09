@@ -4,8 +4,10 @@ import { createSignal, createRoot } from 'solid-js';
  * Game state that persists across screens.
  * Created in a root to avoid disposal issues.
  *
- * Add your game-specific signals here.
- * Pause state lives in core/systems/pause (scaffold feature).
+ * ECS is the source of truth for game state (ecs-state.mdc).
+ * These signals are bridge targets only — bridgeEcsToSignals() propagates
+ * from ECS resources to these signals.
+ * Signals survive ECS destroy/recreate so result screens can read them.
  */
 
 export interface GameState {
@@ -17,12 +19,24 @@ export interface GameState {
   setLevel: (level: number) => void;
   incrementLevel: () => void;
 
+  levelsCleared: () => number;
+  setLevelsCleared: (count: number) => void;
+
+  isAllClear: () => boolean;
+  setIsAllClear: (v: boolean) => void;
+
+  isLoss: () => boolean;
+  setIsLoss: (v: boolean) => void;
+
   reset: () => void;
 }
 
 function createGameState(): GameState {
   const [score, setScore] = createSignal(0);
   const [level, setLevel] = createSignal(1);
+  const [levelsCleared, setLevelsCleared] = createSignal(0);
+  const [isAllClear, setIsAllClear] = createSignal(false);
+  const [isLoss, setIsLoss] = createSignal(false);
 
   return {
     score,
@@ -33,9 +47,21 @@ function createGameState(): GameState {
     setLevel,
     incrementLevel: () => setLevel((l) => l + 1),
 
+    levelsCleared,
+    setLevelsCleared,
+
+    isAllClear,
+    setIsAllClear,
+
+    isLoss,
+    setIsLoss,
+
     reset: () => {
       setScore(0);
       setLevel(1);
+      setLevelsCleared(0);
+      setIsAllClear(false);
+      setIsLoss(false);
     },
   };
 }
